@@ -1,0 +1,58 @@
+@import 'tailwindcss';
+@import 'leaflet/dist/leaflet.css';
+
+@theme {
+  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+  --color-bg: #0f0f0f;
+  --color-panel: #171717;
+  --color-edge: #262626;
+  /* site accent — orange / black / white theme */
+  --color-orange: #fb923c;
+  --color-orange-bright: #fdba74;
+  --color-orange-deep: #f97316;
+  --color-neon-cyan: #22d3ee;
+  --color-neon-purple: #a78bfa;
+  --color-neon-green: #4ade80;
+  --color-neon-pink: #f472b6;
+  --color-neon-amber: #fbbf24;
+  --color-neon-red: #f87171;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--color-bg);
+  color: #e5e5e5;
+  font-family: var(--font-sans);
+}
+
+/* dark leaflet tiles — brighter/higher-contrast so base roads stay legible */
+.dark-tiles {
+  filter: invert(1) hue-rotate(180deg) brightness(1.08) contrast(1.18) saturate(0.45);
+}
+
+.leaflet-container {
+  background: #0a0a0a;
+  font-family: var(--font-mono);
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #171717;
+}
+::-webkit-scrollbar-thumb {
+  background: #404040;
+  border-radius: 4px;
+}
+
+input[type='range'] {
+  accent-color: var(--color-orange);
+}
