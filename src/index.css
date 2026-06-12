@@ -31,11 +31,6 @@ body {
   font-family: var(--font-sans);
 }
 
-/* dark leaflet tiles — brighter/higher-contrast so base roads stay legible */
-.dark-tiles {
-  filter: invert(1) hue-rotate(180deg) brightness(1.08) contrast(1.18) saturate(0.45);
-}
-
 .leaflet-container {
   background: #0a0a0a;
   font-family: var(--font-mono);

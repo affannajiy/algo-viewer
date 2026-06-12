@@ -12,6 +12,24 @@ const ENDPOINTS = [
 const HIGHWAY_FILTER =
   'motorway|trunk|primary|secondary|tertiary|unclassified|residential|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link|living_street'
 
+// Typical urban speeds (km/h) per highway type — powers "Fastest" routing.
+const SPEED_KMH = {
+  motorway: 100,
+  motorway_link: 60,
+  trunk: 80,
+  trunk_link: 50,
+  primary: 60,
+  primary_link: 40,
+  secondary: 50,
+  secondary_link: 40,
+  tertiary: 40,
+  tertiary_link: 35,
+  unclassified: 40,
+  residential: 30,
+  living_street: 15,
+}
+const DEFAULT_KMH = 40
+
 export function boundingBox(a, b, padDeg = 0.005) {
   return {
     south: Math.min(a.lat, b.lat) - padDeg,
@@ -59,19 +77,21 @@ function buildGraph(elements) {
   for (const el of elements) {
     if (el.type === 'node') nodes.set(el.id, { lat: el.lat, lon: el.lon })
   }
-  const addEdge = (a, b) => {
+  const addEdge = (a, b, kmh) => {
     const d = haversine(nodes.get(a), nodes.get(b))
+    const t = d / (kmh / 3.6) // seconds at this road's typical speed
     if (!adj.has(a)) adj.set(a, [])
     if (!adj.has(b)) adj.set(b, [])
-    adj.get(a).push({ to: b, dist: d })
-    adj.get(b).push({ to: a, dist: d }) // treat all roads as bidirectional for visualisation
+    adj.get(a).push({ to: b, dist: d, time: t })
+    adj.get(b).push({ to: a, dist: d, time: t }) // treat all roads as bidirectional for visualisation
   }
   for (const el of elements) {
     if (el.type !== 'way' || !el.nodes) continue
+    const kmh = SPEED_KMH[el.tags?.highway] ?? DEFAULT_KMH
     for (let i = 1; i < el.nodes.length; i++) {
       const a = el.nodes[i - 1]
       const b = el.nodes[i]
-      if (nodes.has(a) && nodes.has(b)) addEdge(a, b)
+      if (nodes.has(a) && nodes.has(b)) addEdge(a, b, kmh)
     }
   }
   // keep only largest connected component so start/end snap to routable nodes

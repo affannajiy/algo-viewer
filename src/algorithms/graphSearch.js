@@ -1,7 +1,8 @@
 // Pure graph search over an OSM road graph.
-// Graph shape: { nodes: Map<id, {lat, lon}>, adj: Map<id, Array<{to, dist}>> }
-// dist in metres. Each algorithm returns:
-// { exploredEdges: [[fromId, toId]], path: [nodeId], pathDist: metres, nodesVisited, timeMs }
+// Graph shape: { nodes: Map<id, {lat, lon}>, adj: Map<id, Array<{to, dist, time}>> }
+// dist in metres, time in seconds (road-type speed). Each algorithm returns:
+// { exploredEdges: [[fromId, toId]], path: [nodeId], pathDist: metres, pathTime: seconds, nodesVisited, timeMs }
+// Weighted algorithms (Dijkstra, A*) take opts.weight: 'dist' (shortest) | 'time' (fastest).
 
 export function haversine(a, b) {
   const R = 6371000
@@ -61,17 +62,21 @@ function reconstruct(cameFrom, graph, endId) {
     cur = cameFrom.get(cur)
   }
   let dist = 0
+  let time = 0
   for (let i = 1; i < path.length; i++) {
-    dist += haversine(graph.nodes.get(path[i - 1]), graph.nodes.get(path[i]))
+    const edge = (graph.adj.get(path[i - 1]) ?? []).find((e) => e.to === path[i])
+    dist += edge ? edge.dist : haversine(graph.nodes.get(path[i - 1]), graph.nodes.get(path[i]))
+    time += edge?.time ?? 0
   }
-  return { path, dist }
+  return { path, dist, time }
 }
 
 function result(exploredEdges, cameFrom, graph, endId, found, t0) {
   const timeMs = performance.now() - t0
-  if (!found) return { exploredEdges, path: [], pathDist: 0, nodesVisited: exploredEdges.length, timeMs }
-  const { path, dist } = reconstruct(cameFrom, graph, endId)
-  return { exploredEdges, path, pathDist: dist, nodesVisited: exploredEdges.length, timeMs }
+  if (!found)
+    return { exploredEdges, path: [], pathDist: 0, pathTime: 0, nodesVisited: exploredEdges.length, timeMs }
+  const { path, dist, time } = reconstruct(cameFrom, graph, endId)
+  return { exploredEdges, path, pathDist: dist, pathTime: time, nodesVisited: exploredEdges.length, timeMs }
 }
 
 export function graphBfs(graph, startId, endId) {
@@ -117,7 +122,7 @@ export function graphDfs(graph, startId, endId) {
   return result(exploredEdges, cameFrom, graph, endId, false, t0)
 }
 
-export function graphDijkstra(graph, startId, endId) {
+export function graphDijkstra(graph, startId, endId, { weight = 'dist' } = {}) {
   const t0 = performance.now()
   const exploredEdges = []
   const dist = new Map([[startId, 0]])
@@ -131,22 +136,28 @@ export function graphDijkstra(graph, startId, endId) {
     done.add(cur)
     if (cameFrom.has(cur)) exploredEdges.push([cameFrom.get(cur), cur])
     if (cur === endId) return result(exploredEdges, cameFrom, graph, endId, true, t0)
-    for (const { to, dist: w } of graph.adj.get(cur) ?? []) {
-      const nd = d + w
-      if (nd < (dist.get(to) ?? Infinity)) {
-        dist.set(to, nd)
-        cameFrom.set(to, cur)
-        heap.push(nd, to)
+    for (const e of graph.adj.get(cur) ?? []) {
+      const nd = d + e[weight]
+      if (nd < (dist.get(e.to) ?? Infinity)) {
+        dist.set(e.to, nd)
+        cameFrom.set(e.to, cur)
+        heap.push(nd, e.to)
       }
     }
   }
   return result(exploredEdges, cameFrom, graph, endId, false, t0)
 }
 
-export function graphAstar(graph, startId, endId) {
+// Fastest legal speed in the network (m/s) — keeps the time heuristic admissible.
+const MAX_SPEED_MS = 100 / 3.6
+
+export function graphAstar(graph, startId, endId, { weight = 'dist' } = {}) {
   const t0 = performance.now()
   const endNode = graph.nodes.get(endId)
-  const h = (id) => haversine(graph.nodes.get(id), endNode)
+  const h =
+    weight === 'time'
+      ? (id) => haversine(graph.nodes.get(id), endNode) / MAX_SPEED_MS
+      : (id) => haversine(graph.nodes.get(id), endNode)
   const exploredEdges = []
   const g = new Map([[startId, 0]])
   const cameFrom = new Map()
@@ -159,12 +170,12 @@ export function graphAstar(graph, startId, endId) {
     done.add(cur)
     if (cameFrom.has(cur)) exploredEdges.push([cameFrom.get(cur), cur])
     if (cur === endId) return result(exploredEdges, cameFrom, graph, endId, true, t0)
-    for (const { to, dist: w } of graph.adj.get(cur) ?? []) {
-      const ng = g.get(cur) + w
-      if (ng < (g.get(to) ?? Infinity)) {
-        g.set(to, ng)
-        cameFrom.set(to, cur)
-        heap.push(ng + h(to), to)
+    for (const e of graph.adj.get(cur) ?? []) {
+      const ng = g.get(cur) + e[weight]
+      if (ng < (g.get(e.to) ?? Infinity)) {
+        g.set(e.to, ng)
+        cameFrom.set(e.to, cur)
+        heap.push(ng + h(e.to), e.to)
       }
     }
   }
@@ -175,25 +186,33 @@ export const MAP_ALGORITHMS = {
   bfs: {
     name: 'BFS',
     fn: graphBfs,
+    weighted: false,
+    color: '#22d3ee',
     description:
       'Breadth-first search. Ignores road lengths — finds fewest intersections, not shortest distance.',
   },
   dfs: {
     name: 'DFS',
     fn: graphDfs,
+    weighted: false,
+    color: '#f472b6',
     description:
       'Depth-first search. Wanders deep along roads before backtracking. Path usually far from optimal.',
   },
   dijkstra: {
     name: 'Dijkstra',
     fn: graphDijkstra,
+    weighted: true,
+    color: '#a78bfa',
     description:
-      'Expands by true road distance. Guaranteed shortest route, but explores in all directions.',
+      'Expands by true road cost. Guaranteed optimal route, but explores in all directions.',
   },
   astar: {
     name: 'A*',
     fn: graphAstar,
+    weighted: true,
+    color: '#fbbf24',
     description:
-      'Dijkstra guided by straight-line distance to the goal. Shortest route with far less exploration.',
+      'Dijkstra guided by straight-line distance to the goal. Optimal route with far less exploration.',
   },
 }

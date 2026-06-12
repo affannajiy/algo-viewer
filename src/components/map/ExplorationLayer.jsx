@@ -1,9 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Polyline } from 'react-leaflet'
+import { blip, noteFromRatio } from '../../lib/sound'
 
 // Animates explored edges then the final path on a Leaflet map.
 // One multi-polyline for explored edges (cheap), one for the path.
-export default function ExplorationLayer({ graph, result, speed = 60, exploreColor = '#a78bfa', pathColor = '#22d3ee', onDone }) {
+// sound=false in race mode — four synths at once is noise, not feedback.
+export default function ExplorationLayer({
+  graph,
+  result,
+  speed = 60,
+  exploreColor = '#a78bfa',
+  pathColor = '#22d3ee',
+  sound = true,
+  onDone,
+}) {
   const [exploredCount, setExploredCount] = useState(0)
   const [pathProgress, setPathProgress] = useState(0)
   const timerRef = useRef(null)
@@ -18,20 +28,29 @@ export default function ExplorationLayer({ graph, result, speed = 60, exploreCol
     const pathTotal = result.path.length
     let e = 0
     let p = 0
+    let tick = 0
     timerRef.current = setInterval(() => {
       if (e < total) {
         e = Math.min(e + Math.max(2, Math.round(speed / 2)), total)
         setExploredCount(e)
+        // low exploration tick, throttled so it doesn't machine-gun
+        if (sound && tick++ % 3 === 0) {
+          blip(noteFromRatio(e / total, 150, 480), { duration: 0.025, type: 'sine', gain: 0.02 })
+        }
       } else if (p < pathTotal) {
         p = Math.min(p + Math.max(1, Math.round(speed / 10)), pathTotal)
         setPathProgress(p)
+        // rising tone traces the route from start to end
+        if (sound) {
+          blip(noteFromRatio(p / pathTotal, 320, 1040), { duration: 0.06, type: 'triangle', gain: 0.05 })
+        }
       } else {
         clearInterval(timerRef.current)
         onDoneRef.current?.()
       }
     }, 16)
     return () => clearInterval(timerRef.current)
-  }, [result, speed])
+  }, [result, speed, sound])
 
   const exploredSegments = useMemo(() => {
     if (!result || !graph) return []

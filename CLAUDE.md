@@ -12,49 +12,52 @@ npm run preview  # serve the built dist/
 
 No test runner, linter, or typechecker is configured. Verify changes by running `npm run build` (catches import/syntax errors) and exercising the UI in the dev server.
 
-## Architecture
+## What this app is
 
-Client-only React (Vite) + Tailwind CSS v4 + Framer Motion + Leaflet/react-leaflet. No backend. The only network call is to the public **Overpass API** (OpenStreetMap), keyless, from the browser.
+**RouteVis** — a single-page map pathfinding visualiser. Client-only React (Vite) + Tailwind CSS v4 + Framer Motion + Leaflet/react-leaflet. No backend. The only network calls are to two public, keyless OSM services from the browser: the **Overpass API** (road data) and **Nominatim** (place search). The app used to have sorting and grid-pathfinding modules; they were deliberately removed (git history has them) — do not reintroduce a module switcher.
 
 ### The core invariant: algorithms are pure, the UI replays their output
 
-Everything in `src/algorithms/` and `src/lib/overpass.js` is pure JS with **no React imports**. Algorithms never touch the DOM or component state — they compute a complete record of what to draw, and components step through that record. Two record shapes exist:
+Everything in `src/algorithms/` and `src/lib/` is pure JS with **no React imports**. Algorithms never touch the DOM or component state — they compute a complete record of the search, and components animate by revealing a growing slice of that record.
 
-- **Sorting** (`algorithms/sorting.js`) returns an array of *frames*: `{ array, comparing, swapped, sorted }`. Each frame is a full snapshot. `SortingVisualiser` renders `frames[index]`; `usePlayback` advances `index` on a timer.
-- **Pathfinding / graph search** (`algorithms/gridPathfinding.js`, `algorithms/graphSearch.js`) return `{ visitedOrder, path }` (grid) or `{ exploredEdges, path, pathDist, nodesVisited, timeMs }` (map). Components animate by revealing a growing slice of these arrays — explored region first, then the final path.
+`algorithms/graphSearch.js` exports BFS/DFS/Dijkstra/A* returning
+`{ exploredEdges: [[fromId,toId]], path: [nodeId], pathDist (m), pathTime (s), nodesVisited, timeMs }`.
+Weighted algorithms (Dijkstra, A*) take `opts.weight: 'dist' | 'time'`; A* switches to an admissible time heuristic (straight line at the network's max speed) in time mode. BFS/DFS ignore weights — the registry marks them `weighted: false` and the UI shows a hint.
 
-When adding an algorithm, add it to the `*_ALGORITHMS` registry object exported at the bottom of its file (name, fn, complexity/description metadata). The UI is data-driven off these registries — buttons, badges, and descriptions all iterate the registry, so a new entry appears in the UI automatically. Do **not** wire algorithms into components individually.
-
-### Sound (also pure, also no React)
-
-`lib/sound.js` is a tiny Web Audio synth — same no-React rule as the algorithms. One lazily-created `AudioContext` (unlocked on the first user gesture / unmute), `blip(freq, opts)` plays a short oscillator note, `noteFromRatio(0..1, lo, hi)` maps a value to an exponential pitch. A module-level mute flag is exposed via `subscribe`/`isMuted`/`toggleMuted`; React binds to it through `hooks/useSound.js` with `useSyncExternalStore` (the navbar 🔊/🔇 button). Everything is wrapped in try/catch so audio can never break a visualiser. Components call `blip` straight from their animation loop (sorting: per compared bar; grid: low ticks while searching, a rising tone along the path) — they do **not** thread audio through state.
-
-### Three modules, switched in `App.jsx`
-
-`App.jsx` holds a single `module` state (`sorting | grid | map`) and renders one of three top-level components. `MapVisualiser` is `lazy()`-loaded so Leaflet ships in a separate chunk.
-
-1. **Sorting** — `components/sorting/SortingVisualiser.jsx`. Recomputes all frames with `useMemo` whenever the array or algorithm changes.
-2. **Grid** — `components/grid/GridVisualiser.jsx`. Walls live in a `Set` of `"row,col"` keys; the `grid` 2D array is derived via `useMemo`. Animation runs on a `setInterval` whose batch size scales with the speed slider (via a `speedRef` so the running loop reads live speed without restarting). Cell states are `visited | path` only — a single solid colour sweeps outward (no separate "frontier" band, which read as visual noise). The path renders as a **continuous solid line**: `path` cells are square (`rounded-none`) with a `shadow-[0_0_0_1.5px_var(--color-neon-amber)]` ring that bleeds into the `gap-px` grid gutter so adjacent cells merge — don't reintroduce per-cell rounding/glow or it goes back to looking dashed/beaded. Maze generation is recursive backtracking in `algorithms/maze.js`.
-3. **Map** — `components/map/MapVisualiser.jsx` + `CompareMode.jsx` + `ExplorationLayer.jsx`. "Use My Location" sets the start marker from `navigator.geolocation`.
+The `MAP_ALGORITHMS` registry at the bottom of the file carries `{ name, fn, weighted, color, description }`. The UI is data-driven off this registry — algorithm buttons, race colours/counters, and badges all iterate it. Add new algorithms to the registry only; never wire them into components individually.
 
 ### Map data flow (the subtle part)
 
-`useMapGraph` owns start/end latlngs, the fetched graph, loading/error. `loadGraph(start, end)`:
+`hooks/useMapGraph.js` owns start/end latlngs, the fetched graph, loading/error. `loadGraph(start, end)`:
 
-1. `lib/overpass.js#fetchRoadGraph` builds a bbox between the two points (**capped at ~0.02 deg² area** — refuses larger to keep Overpass fast/polite), queries drivable `highway` ways, and builds `{ nodes: Map<id,{lat,lon}>, adj: Map<id,[{to,dist}]> }`. Edges are bidirectional; distances are haversine metres.
-2. It then **prunes to the largest connected component** so `nearestNode` always snaps start/end onto routable nodes (otherwise an isolated road fragment could trap the search).
-3. Returns an *enriched* graph `{ ...g, startId, endId }`. `loadGraph` must return this enriched object (not the raw `g`) because callers run the algorithm synchronously on the return value before state has committed.
+1. `lib/overpass.js#fetchRoadGraph` builds a bbox between the two points (**capped at ~0.02 deg² area** — refuses larger with a friendly error to keep Overpass fast/polite), queries drivable `highway` ways, and builds `{ nodes: Map<id,{lat,lon}>, adj: Map<id,[{to,dist,time}]> }`. Edges are bidirectional; `dist` is haversine metres, `time` is seconds at the road type's speed (`SPEED_KMH` table — motorway 100 … living_street 15, default 40).
+2. It then **prunes to the largest connected component** so `nearestNode` always snaps start/end onto routable nodes.
+3. Returns an *enriched* graph `{ ...g, startId, endId }`. `loadGraph` must return this enriched object (not the raw `g`) because callers run algorithms synchronously on the return value before state has committed.
 
 Moving a marker invalidates the graph (`setGraph(null)`) — the old road network no longer matches the new bbox.
 
-`ExplorationLayer` draws explored edges as one cheap multi-segment `Polyline` (low opacity) and the final path as a second bright `Polyline`, growing both via a timer. `CompareMode` runs all four registry algorithms on the *same* graph in four mini maps and labels shortest path / fastest run / fewest nodes.
+There are two Overpass endpoints with failover (the primary 504s under load regularly — that's expected, not a bug).
+
+### MapVisualiser interaction model
+
+`components/map/MapVisualiser.jsx` is the whole app surface. Conventions:
+
+- **Placing points**: map click = manual (user then hits ▶ Visualise). Marker **drag-end** and **search picks** auto-route immediately (`setPoint(..., { autoroute: true })` → `routeWith`), because moving an existing route is explicit intent. Keep this split.
+- **Control panel folds**: manual minimise (— button → 🧭 pill) and auto-fold when a run starts *successfully*, so the animation owns the screen. On a load error the panel force-reopens (`setPanelOpen(true)`) — error text must never be hidden behind the pill.
+- **Auto-locate**: on mount, `locate(true)` (silent — no error chrome if denied) drops the start marker at the GPS position; the `Recenter` child handles both `flyTo` (single point) and `fitBounds` (route).
+- **Markers** are draggable Leaflet `Marker`s with `divIcon` coloured dots (green start / red end) — not CircleMarkers (those can't drag).
+- **Weight toggle** (`'dist'` | `'time'`): switching reruns the current result/race **synchronously** on the already-loaded graph — no refetch.
+- **Race mode** (`RaceLayer.jsx`): all registry algorithms run on the *same* graph, then one shared timer reveals every exploration at the same edges-per-tick rate, so fewer-explored algorithms visibly finish first. `onProgress` is throttled (~every 6 ticks) to feed the counter panel without re-rendering the map at 60 fps. Race replaces the old mini-map CompareMode — don't bring back per-algorithm mini maps. **Focus/isolate**: `raceHover` (transient, from line `mouseover` or panel-name hover) takes priority over `racePin` (click/tap toggle, the touch-screen path); the combined `raceFocus` is passed to `RaceLayer`, which fades non-focused algorithms to near-invisible instead of unmounting them.
+- **Search** (`SearchPanel.jsx` → `lib/geocode.js`): debounced ≥600 ms per Nominatim's 1 req/s usage policy. Keep the debounce.
+
+### Sound (also pure, also no React)
+
+`lib/sound.js` is a tiny Web Audio synth — same no-React rule as the algorithms. One lazily-created `AudioContext` (unlocked on first user gesture / unmute), `blip(freq, opts)` plays a short oscillator note, `noteFromRatio(0..1, lo, hi)` maps a value to an exponential pitch. Module-level mute flag exposed via `subscribe`/`isMuted`/`toggleMuted`; React binds through `hooks/useSound.js` (`useSyncExternalStore`, navbar 🔊/🔇). Everything is wrapped in try/catch so audio can never break the visualiser. `ExplorationLayer` calls `blip` from its animation loop (low ticks exploring, rising tone on the path) and takes `sound={false}` in race mode — four synths at once is noise, keep race silent.
 
 ### Styling
 
-Tailwind v4 configured entirely in `src/index.css` via `@theme` (no `tailwind.config.js`). Custom tokens: `--color-bg/panel/edge`, the site-accent `--color-orange*`, and `--color-neon-*` (cyan/purple/green/pink/amber/red), used as `bg-orange`, `text-neon-purple`, etc. Dark mode only.
+Tailwind v4 configured entirely in `src/index.css` via `@theme` (no `tailwind.config.js`). Custom tokens: `--color-bg/panel/edge`, the site-accent `--color-orange*`, and `--color-neon-*` (cyan/purple/green/pink/amber/red). Dark mode only.
 
-The theme is **black / white / orange**, but this is a *chrome-only* convention: navbar, buttons, active states, borders, sliders, and value text use `orange`; the meaning-bearing data colours (sorting bar states, grid searched/path, map route lines, start green / end red) are kept distinct on purpose and must **not** be collapsed to orange. Leaflet tiles are darkened with the `.dark-tiles` CSS invert/hue filter rather than a dark tile provider. Stat/code text uses the JetBrains Mono `font-mono`.
+The theme is **black / white / orange**, but this is a *chrome-only* convention: navbar, buttons, active states, borders, sliders, and value text use `orange`; the meaning-bearing data colours (per-algorithm explore colours from the registry, start green / end red, the orange final path) stay distinct and must **not** be collapsed to one colour. Base tiles are **CARTO Dark Matter** (`dark_all`, keyless, subdomains a–d, `{r}` retina) — a purpose-built minimal dark basemap so the algorithm colours pop; the old OSM-tiles + `.dark-tiles` CSS-invert hack is gone, don't bring it back. Stat/code text uses JetBrains Mono `font-mono`.
 
-### Responsive layout
-
-Module roots are `flex flex-col gap-4 lg:h-full lg:flex-row` — they only lock to viewport height on `lg+`. On smaller screens the layout stacks and `App.jsx`'s `<main>` (`overflow-y-auto`) scrolls; do not put `h-full` back on the module roots unconditionally or the stacked content gets clipped with no scroll.
+Floating panels over the map need `z-[1000]`+ (Leaflet panes own lower z-indices); the search dropdown uses `z-[1100]`.
